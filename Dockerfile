@@ -26,17 +26,26 @@ ARG CC_CONNECT_VERSION=latest
 RUN set -eux; \
     if [ "$CC_CONNECT_VERSION" = "latest" ]; then \
         URL=$(curl -fsSL https://api.github.com/repos/chenhg5/cc-connect/releases/latest \
+              | grep -oE '"browser_download_url":\s*"[^"]*linux-amd64\.tar\.gz"' \
               | grep -oE 'https://[^"]*linux-amd64\.tar\.gz' | head -1); \
     else \
         URL="https://github.com/chenhg5/cc-connect/releases/download/${CC_CONNECT_VERSION}/cc-connect-${CC_CONNECT_VERSION}-linux-amd64.tar.gz"; \
     fi; \
-    echo "Downloading: $URL"; \
+    echo ">>> Download URL: [$URL]"; \
+    [ -n "$URL" ] || { echo "!!! 未找到 linux-amd64 tarball URL"; exit 1; }; \
     curl -fsSL -o /tmp/cc-connect.tar.gz "$URL"; \
-    tar -xzf /tmp/cc-connect.tar.gz -C /tmp; \
-    mv "$(find /tmp -maxdepth 2 -type f -name cc-connect | head -1)" /usr/local/bin/cc-connect; \
+    ls -la /tmp/cc-connect.tar.gz; \
+    mkdir -p /tmp/cc-extract; \
+    tar -xzf /tmp/cc-connect.tar.gz -C /tmp/cc-extract; \
+    echo ">>> Extracted contents:"; \
+    find /tmp/cc-extract -type f -exec ls -la {} \;; \
+    BIN=$(find /tmp/cc-extract -type f -name 'cc-connect*' ! -name '*.tar.gz' | head -1); \
+    echo ">>> Picked binary: [$BIN]"; \
+    [ -n "$BIN" ] || { echo "!!! tarball 内未找到 cc-connect 二进制"; exit 1; }; \
+    mv "$BIN" /usr/local/bin/cc-connect; \
     chmod +x /usr/local/bin/cc-connect; \
-    rm -rf /tmp/cc-connect*; \
-    cc-connect --version || true
+    rm -rf /tmp/cc-connect* /tmp/cc-extract; \
+    cc-connect --version || echo "(cc-connect --version 不可用，忽略)"
 
 # 应用目录结构
 WORKDIR /app
