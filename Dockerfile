@@ -14,21 +14,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # 安装 Claude Code 原生二进制（不需要 Node.js）
-# install.sh 会把二进制 + 依赖装到 $HOME/.local/，依赖（动态库/资源）必须
-# 跟二进制在同一目录树，且对所有用户可读。/root 默认 700 权限会让非 root
-# 用户 exec 时拿到 ENOENT。所以用 /opt/claude 作为 HOME 安装，保留目录结构。
-# 注意：HOME 必须用 export 才能跨管道传给 bash，写成 `HOME=x curl | bash` 不生效。
+# install.sh 把 launcher 放在 ~/.local/bin/claude（符号链接到 versions/<ver>），
+# 真实二进制和依赖都在 ~/.local/share/claude/ 下。需要整个目录树对所有用户可读，
+# 否则非 root 用户 exec 会拿到 ENOENT（root 700 权限问题）。所以用 /opt/claude 作为 HOME。
+# 注意：HOME 必须用 export 才能跨管道传给 bash。
 RUN set -eux; \
     mkdir -p /opt/claude; \
     export HOME=/opt/claude; \
     curl -fsSL https://claude.ai/install.sh | bash; \
-    echo ">>> /opt/claude 内容:"; \
-    find /opt/claude -type f -o -type l | head -30; \
     chmod -R a+rX /opt/claude; \
-    CLAUDE_BIN=$(find /opt/claude -type f -name claude -executable | head -1); \
-    echo ">>> claude binary: $CLAUDE_BIN"; \
-    [ -n "$CLAUDE_BIN" ]; \
-    ln -sf "$CLAUDE_BIN" /usr/local/bin/claude; \
+    ls -la /opt/claude/.local/bin/claude; \
+    ln -sf /opt/claude/.local/bin/claude /usr/local/bin/claude; \
+    ls -la /usr/local/bin/claude; \
     /usr/local/bin/claude --version
 
 # 安装 cc-connect 预编译二进制
