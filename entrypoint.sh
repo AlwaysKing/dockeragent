@@ -114,19 +114,34 @@ python3 - <<'PY' || exit 1
 import re, sys
 text = open('/app/config/cc-connect.toml').read()
 
-# 提取 [[projects.platforms]] 块（粗略匹配到下一个 [[ 或 [ 段或文件末尾）
-m = re.search(r'\[\[projects\.platforms\]\]\s*(.*?)(?=\n\[\[|\n\[|\Z)', text, re.S)
-if not m:
+# 提取所有 [[projects.platforms]] 块及其子表 [projects.platforms.options] 等。
+# lookahead 只在遇到下一个 [[ 数组表时截止；[xxx] 子表属于当前 platform。
+blocks = re.findall(
+    r'\[\[projects\.platforms\]\][\s\S]*?(?=\n\[\[|\Z)',
+    text,
+)
+if not blocks:
     print("错误: cc-connect.toml 中未找到 [[projects.platforms]] 段", file=sys.stderr)
     sys.exit(1)
 
-block = m.group(1)
-for key in ('bot_id', 'bot_secret'):
-    km = re.search(rf'^\s*{key}\s*=\s*"([^"]*)"', block, re.M)
-    if not km or not km.group(1).strip():
-        print(f"错误: cc-connect.toml 中 platforms.{key} 为空或缺失", file=sys.stderr)
-        sys.exit(1)
-    print(f"  platforms.{key}: OK")
+# 至少一个 platform 的 bot_id / bot_secret 非空即可
+ok_count = 0
+for i, block in enumerate(blocks):
+    values = {}
+    for key in ('bot_id', 'bot_secret'):
+        km = re.search(rf'^\s*{key}\s*=\s*"([^"]*)"', block, re.M)
+        values[key] = km.group(1).strip() if km else ''
+    if all(values.values()):
+        print(f"  platforms[{i}].bot_id: OK")
+        print(f"  platforms[{i}].bot_secret: OK")
+        ok_count += 1
+    else:
+        for k, v in values.items():
+            print(f"  platforms[{i}].{k}: '{v}'" if v else f"  platforms[{i}].{k}: 空", file=sys.stderr)
+
+if ok_count == 0:
+    print("错误: 所有 [[projects.platforms]] 的 bot_id/bot_secret 均为空或缺失", file=sys.stderr)
+    sys.exit(1)
 PY
 
 echo ""
