@@ -146,7 +146,8 @@ PY
 
 echo ""
 echo "==================== 二进制可访问性预检 ===================="
-# 切换用户前验证 claude 和 cc-connect 都能被非 root 用户访问 + 真正能 exec
+# 切换用户前验证 claude 和 cc-connect 都能被非 root 用户真正 exec
+# 同时验证软链路径（cc-connect 实际调用方式）和真实路径
 for bin in /usr/local/bin/claude /usr/local/bin/cc-connect; do
     if [ ! -e "$bin" ]; then
         echo "警告: $bin 不存在" >&2
@@ -156,19 +157,25 @@ for bin in /usr/local/bin/claude /usr/local/bin/cc-connect; do
     REAL=$(readlink -f "$bin")
     echo "  实际路径: $REAL"
     if [ "$IS_ROOT" = "0" ]; then
-        # 真正用目标用户 exec 验证（比 test -x 严格，能捕捉到缺库、interpreter 缺失等）
-        if su -s /bin/bash "$USER_NAME" -c "'$REAL' --version >/dev/null 2>&1"; then
-            echo "  $USER_NAME exec $REAL: OK"
-        else
-            RC=$?
-            echo "错误: $USER_NAME exec $REAL 失败 (exit=$RC)" >&2
-            echo "--- 诊断信息 ---" >&2
-            echo "ldd 输出:" >&2
-            ldd "$REAL" >&2 2>&1 || true
-            echo "file 输出:" >&2
-            file "$REAL" 2>&1 >&2 || true
-            exit 1
-        fi
+        # 同时验证软链路径（cc-connect 走这个）和真实路径
+        for path in "$bin" "$REAL"; do
+            if su -s /bin/bash "$USER_NAME" -c "'$path' --version >/dev/null 2>&1"; then
+                echo "  $USER_NAME exec $path: OK"
+            else
+                RC=$?
+                echo "错误: $USER_NAME exec $path 失败 (exit=$RC)" >&2
+                echo "--- 诊断信息 ---" >&2
+                echo "ldd $REAL:" >&2
+                ldd "$REAL" >&2 2>&1 || true
+                echo "file $REAL:" >&2
+                file "$REAL" 2>&1 >&2 || true
+                echo "readlink $bin:" >&2
+                readlink "$bin" >&2 2>&1 || true
+                echo "test -e by $USER_NAME:" >&2
+                su -s /bin/bash "$USER_NAME" -c "test -e '$path' && echo EXISTS || echo BROKEN" >&2
+                exit 1
+            fi
+        done
     fi
 done
 
