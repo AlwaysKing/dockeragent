@@ -145,6 +145,30 @@ if ok_count == 0:
 PY
 
 echo ""
+echo "==================== 二进制可访问性预检 ===================="
+# 切换用户前验证 claude 和 cc-connect 都能被非 root 用户访问
+for bin in /usr/local/bin/claude /usr/local/bin/cc-connect; do
+    if [ ! -e "$bin" ]; then
+        echo "警告: $bin 不存在" >&2
+        continue
+    fi
+    ls -la "$bin"
+    # 跟随软链看真实路径
+    REAL=$(readlink -f "$bin")
+    echo "  实际路径: $REAL"
+    if [ "$IS_ROOT" = "0" ]; then
+        # 模拟目标用户访问
+        if su -s /bin/bash "$USER_NAME" -c "test -x '$REAL' && test -r '$REAL'" 2>/dev/null; then
+            echo "  $USER_NAME 可访问: OK"
+        else
+            echo "错误: $USER_NAME 无法访问 $REAL" >&2
+            echo "请检查 /opt/claude 的权限（构建期应执行 chmod -R a+rX）" >&2
+            exit 1
+        fi
+    fi
+done
+
+echo ""
 echo "==================== 启动 cc-connect ===================="
 if [ "$IS_ROOT" = "1" ]; then
     exec cc-connect
