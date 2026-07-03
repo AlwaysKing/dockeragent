@@ -146,23 +146,27 @@ PY
 
 echo ""
 echo "==================== 二进制可访问性预检 ===================="
-# 切换用户前验证 claude 和 cc-connect 都能被非 root 用户访问
+# 切换用户前验证 claude 和 cc-connect 都能被非 root 用户访问 + 真正能 exec
 for bin in /usr/local/bin/claude /usr/local/bin/cc-connect; do
     if [ ! -e "$bin" ]; then
         echo "警告: $bin 不存在" >&2
         continue
     fi
     ls -la "$bin"
-    # 跟随软链看真实路径
     REAL=$(readlink -f "$bin")
     echo "  实际路径: $REAL"
     if [ "$IS_ROOT" = "0" ]; then
-        # 模拟目标用户访问
-        if su -s /bin/bash "$USER_NAME" -c "test -x '$REAL' && test -r '$REAL'" 2>/dev/null; then
-            echo "  $USER_NAME 可访问: OK"
+        # 真正用目标用户 exec 验证（比 test -x 严格，能捕捉到缺库、interpreter 缺失等）
+        if su -s /bin/bash "$USER_NAME" -c "'$REAL' --version >/dev/null 2>&1"; then
+            echo "  $USER_NAME exec $REAL: OK"
         else
-            echo "错误: $USER_NAME 无法访问 $REAL" >&2
-            echo "请检查 /opt/claude 的权限（构建期应执行 chmod -R a+rX）" >&2
+            RC=$?
+            echo "错误: $USER_NAME exec $REAL 失败 (exit=$RC)" >&2
+            echo "--- 诊断信息 ---" >&2
+            echo "ldd 输出:" >&2
+            ldd "$REAL" >&2 2>&1 || true
+            echo "file 输出:" >&2
+            file "$REAL" 2>&1 >&2 || true
             exit 1
         fi
     fi
