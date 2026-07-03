@@ -1,0 +1,9 @@
+.git
+.github
+docs/
+*.md
+!data/.claude/CLAUDE.md
+.DS_Store
+.gitignore
+.dockerignore
+.claude/
