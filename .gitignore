@@ -1,0 +1,14 @@
+# macOS
+.DS_Store
+
+# 用户运行时数据（挂载覆盖时使用，不入库）
+/data/**
+!/data/.claude/
+!/data/.claude/CLAUDE.md
+!/data/docs/
+!/data/docs/.gitkeep
+!/data/cache/
+!/data/cache/.gitkeep
+
+# 本地 Claude 设置
+/.claude/settings.local.json

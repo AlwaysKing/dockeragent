@@ -1,0 +1,30 @@
+language = "zh"
+
+[display]
+mode = "quiet"
+
+[[projects]]
+name = "dockeragent"
+show_context_indicator = false
+reply_footer = false 
+quiet = true
+
+
+[projects.display]
+mode = "quiet"
+
+[projects.agent]
+type = "claudecode"
+
+[projects.agent.options]
+work_dir = "/app/data"
+mode = "yolo"
+
+[[projects.platforms]]
+type = ""
+
+[projects.platforms.options]
+mode = ""
+bot_id = ""
+bot_secret = ""
+allow_from = "*"
