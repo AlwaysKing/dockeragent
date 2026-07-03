@@ -14,11 +14,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # 安装 Claude Code 原生二进制（不需要 Node.js）
-# install.sh 默认装到 $HOME/.local/bin/claude，构建期 HOME=/root
-RUN curl -fsSL https://claude.ai/install.sh | bash \
-    && cp /root/.local/bin/claude /usr/local/bin/claude \
-    && chmod +x /usr/local/bin/claude \
-    && rm -rf /root/.local/bin/claude
+# install.sh 会把二进制 + 依赖装到 $HOME/.local/，依赖（动态库/资源）必须
+# 跟二进制在同一目录树，且对所有用户可读。/root 默认 700 权限会让非 root
+# 用户 exec 时拿到 ENOENT。所以用 /opt/claude 作为 HOME 安装，保留目录结构。
+RUN mkdir -p /opt/claude \
+    && HOME=/opt/claude curl -fsSL https://claude.ai/install.sh | bash \
+    && chmod -R a+rX /opt/claude \
+    && CLAUDE_BIN=$(find /opt/claude -type f -name claude -executable | head -1) \
+    && echo ">>> claude binary: $CLAUDE_BIN" \
+    && [ -n "$CLAUDE_BIN" ] \
+    && ln -sf "$CLAUDE_BIN" /usr/local/bin/claude \
+    && /usr/local/bin/claude --version
 
 # 安装 cc-connect 预编译二进制
 # Release 提供 tar.gz 包，需要解压后取出二进制
