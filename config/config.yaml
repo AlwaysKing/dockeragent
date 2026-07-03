@@ -1,3 +1,5 @@
+# 容器运行用户/组定义
+# 缺失或省略时默认使用 root:root
 USER:
     ID: 2000
     NAME: Server

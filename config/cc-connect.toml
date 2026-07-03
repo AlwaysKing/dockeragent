@@ -1,3 +1,6 @@
+# cc-connect 配置示例
+# 完整模板见 https://github.com/chenhg5/cc-connect/blob/main/config.example.toml
+
 language = "zh"
 
 [display]
@@ -6,9 +9,8 @@ mode = "quiet"
 [[projects]]
 name = "dockeragent"
 show_context_indicator = false
-reply_footer = false 
+reply_footer = false
 quiet = true
-
 
 [projects.display]
 mode = "quiet"
@@ -17,14 +19,16 @@ mode = "quiet"
 type = "claudecode"
 
 [projects.agent.options]
+# 项目工作目录（容器内路径）
 work_dir = "/app/data"
 mode = "yolo"
 
+# ====== 以下 platforms 段必填，bot_id / bot_secret 不能为空 ======
 [[projects.platforms]]
-type = ""
+type = ""        # 平台类型：feishu / dingtalk / slack / telegram / discord / line ...
 
 [projects.platforms.options]
-mode = ""
-bot_id = ""
-bot_secret = ""
+mode = ""        # 平台模式
+bot_id = ""      # 平台 Bot ID（必填）
+bot_secret = ""  # 平台 Bot Secret（必填）
 allow_from = "*"
