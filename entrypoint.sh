@@ -1,114 +1,138 @@
 #!/bin/bash
 set -e
 
-# 配置文件路径
-CONFIG_FILE="/app/config.yaml"
+# ============== 路径常量 ==============
+CONFIG_DIR="/app/config"
+CC_CONNECT_TOML="$CONFIG_DIR/cc-connect.toml"
+CLAUDE_JSON="$CONFIG_DIR/claude.json"
+CONFIG_YAML="$CONFIG_DIR/config.yaml"
 
-# 检查配置文件是否存在
-if [ ! -f "$CONFIG_FILE" ]; then
-    echo "错误: 配置文件 $CONFIG_FILE 不存在"
+# ============== 1. 完整性检查 ==============
+echo "[1/5] 完整性检查..."
+
+if [ ! -f "$CC_CONNECT_TOML" ]; then
+    echo "错误: 缺少必需配置文件 $CC_CONNECT_TOML" >&2
+    echo "请将宿主机配置目录挂载到 /app/config，并保证包含 cc-connect.toml" >&2
     exit 1
 fi
 
-# 使用 Python 解析 YAML（如果没有 yq，用 Python 最可靠）
-parse_yaml() {
-    python3 -c "
-import yaml
-import sys
+if [ ! -f "$CLAUDE_JSON" ]; then
+    echo "错误: 缺少必需配置文件 $CLAUDE_JSON" >&2
+    echo "请将宿主机配置目录挂载到 /app/config，并保证包含 claude.json" >&2
+    exit 1
+fi
+
+echo "  cc-connect.toml: OK"
+echo "  claude.json:     OK"
+
+# ============== 2. 解析用户/组 ==============
+echo "[2/5] 解析用户/组..."
+
+if [ -f "$CONFIG_YAML" ]; then
+    CONFIG_DATA=$(python3 -c "
+import yaml, sys
 try:
-    with open('$CONFIG_FILE', 'r') as f:
-        config = yaml.safe_load(f)
-    user_name = config.get('USER', {}).get('NAME', 'Server')
-    user_id = config.get('USER', {}).get('ID', 2000)
-    group_name = config.get('GROUP', {}).get('NAME', 'Server')
-    group_id = config.get('GROUP', {}).get('ID', 2000)
-    print(f'{user_name}|{user_id}|{group_name}|{group_id}')
+    with open('$CONFIG_YAML') as f:
+        c = yaml.safe_load(f)
+    uname = (c.get('USER') or {}).get('NAME', 'root')
+    uid   = (c.get('USER') or {}).get('ID', 0)
+    gname = (c.get('GROUP') or {}).get('NAME', 'root')
+    gid   = (c.get('GROUP') or {}).get('ID', 0)
+    print(f'{uname}|{uid}|{gname}|{gid}')
 except Exception as e:
-    print(f'ERROR|{e}', file=sys.stderr)
+    print(f'ERROR|{e}', file=sys.stderr); sys.exit(1)
+") || { echo "错误: 解析 config.yaml 失败" >&2; exit 1; }
+
+    USER_NAME=$(echo "$CONFIG_DATA" | cut -d'|' -f1)
+    USER_ID=$(echo "$CONFIG_DATA" | cut -d'|' -f2)
+    GROUP_NAME=$(echo "$CONFIG_DATA" | cut -d'|' -f3)
+    GROUP_ID=$(echo "$CONFIG_DATA" | cut -d'|' -f4)
+else
+    echo "  config.yaml 不存在，使用默认 root:root"
+    USER_NAME="root"; USER_ID=0
+    GROUP_NAME="root"; GROUP_ID=0
+fi
+
+echo "  用户: $USER_NAME (UID=$USER_ID)  组: $GROUP_NAME (GID=$GROUP_ID)"
+
+# ============== 3. 创建用户/组 ==============
+echo "[3/5] 创建用户/组..."
+
+IS_ROOT=0
+if [ "$USER_ID" = "0" ]; then
+    IS_ROOT=1
+    USER_HOME="/root"
+    echo "  以 root 运行，跳过用户创建"
+else
+    USER_HOME="/home/$USER_NAME"
+
+    if ! getent group "$GROUP_NAME" >/dev/null 2>&1; then
+        groupadd -g "$GROUP_ID" "$GROUP_NAME"
+        echo "  创建组: $GROUP_NAME (GID=$GROUP_ID)"
+    fi
+
+    if ! getent passwd "$USER_NAME" >/dev/null 2>&1; then
+        useradd -u "$USER_ID" -g "$GROUP_ID" -m -d "$USER_HOME" -s /bin/bash "$USER_NAME"
+        echo "  创建用户: $USER_NAME (UID=$USER_ID)"
+    fi
+
+    # 免密 sudo（运维便利）
+    echo "$USER_NAME ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/$USER_NAME"
+    chmod 440 "/etc/sudoers.d/$USER_NAME"
+fi
+
+# ============== 4. 创建软连接 ==============
+echo "[4/5] 创建软连接..."
+
+# 此时仍是 root 身份，禁用 ~ 与 $HOME，统一用 $USER_HOME
+mkdir -p "$USER_HOME/.cc-connect"
+mkdir -p "$USER_HOME/.claude"
+
+# 清理可能存在的旧软链/文件
+rm -f "$USER_HOME/.cc-connect/config.toml"
+rm -f "$USER_HOME/.claude/settings.json"
+
+ln -sf "$CC_CONNECT_TOML" "$USER_HOME/.cc-connect/config.toml"
+ln -sf "$CLAUDE_JSON"     "$USER_HOME/.claude/settings.json"
+
+echo "  $USER_HOME/.cc-connect/config.toml -> $CC_CONNECT_TOML"
+echo "  $USER_HOME/.claude/settings.json   -> $CLAUDE_JSON"
+
+# 权限：非 root 时把目录、软链、挂载点都 chown 给目标用户
+if [ "$IS_ROOT" = "0" ]; then
+    chown -h "$USER_NAME":"$GROUP_NAME" \
+        "$USER_HOME/.cc-connect" "$USER_HOME/.cc-connect/config.toml" \
+        "$USER_HOME/.claude"     "$USER_HOME/.claude/settings.json"
+    chown -R "$USER_NAME":"$GROUP_NAME" "$USER_HOME/.cc-connect" "$USER_HOME/.claude"
+    chown -R "$USER_NAME":"$GROUP_NAME" /app/config /app/data 2>/dev/null || true
+fi
+
+# ============== 5. cc-connect 配置完整性检查 ==============
+echo "[5/5] cc-connect platforms 检查..."
+
+python3 - <<'PY' || exit 1
+import re, sys
+text = open('/app/config/cc-connect.toml').read()
+
+# 提取 [[projects.platforms]] 块（粗略匹配到下一个 [[ 或 [ 段或文件末尾）
+m = re.search(r'\[\[projects\.platforms\]\]\s*(.*?)(?=\n\[\[|\n\[|\Z)', text, re.S)
+if not m:
+    print("错误: cc-connect.toml 中未找到 [[projects.platforms]] 段", file=sys.stderr)
     sys.exit(1)
-"
-}
 
-# 解析配置
-CONFIG_DATA=$(parse_yaml)
-if [ $? -ne 0 ] || [ -z "$CONFIG_DATA" ]; then
-    echo "错误: 解析配置文件失败"
-    exit 1
-fi
+block = m.group(1)
+for key in ('bot_id', 'bot_secret'):
+    km = re.search(rf'^\s*{key}\s*=\s*"([^"]*)"', block, re.M)
+    if not km or not km.group(1).strip():
+        print(f"错误: cc-connect.toml 中 platforms.{key} 为空或缺失", file=sys.stderr)
+        sys.exit(1)
+    print(f"  platforms.{key}: OK")
+PY
 
-# 提取配置值
-USER_NAME=$(echo "$CONFIG_DATA" | cut -d'|' -f1)
-USER_ID=$(echo "$CONFIG_DATA" | cut -d'|' -f2)
-GROUP_NAME=$(echo "$CONFIG_DATA" | cut -d'|' -f3)
-GROUP_ID=$(echo "$CONFIG_DATA" | cut -d'|' -f4)
-
-echo "配置信息:"
-echo "  用户名: $USER_NAME (UID: $USER_ID)"
-echo "  组名: $GROUP_NAME (GID: $GROUP_ID)"
-
-# 创建用户组（如果不存在）
-if ! getent group "$GROUP_NAME" > /dev/null 2>&1; then
-    echo "创建用户组: $GROUP_NAME (GID: $GROUP_ID)"
-    groupadd -g "$GROUP_ID" "$GROUP_NAME"
+echo ""
+echo "==================== 启动 cc-connect ===================="
+if [ "$IS_ROOT" = "1" ]; then
+    exec cc-connect
 else
-    echo "用户组 $GROUP_NAME 已存在"
+    exec su - "$USER_NAME" -c "cc-connect"
 fi
-
-# 创建用户（如果不存在）
-if ! getent passwd "$USER_NAME" > /dev/null 2>&1; then
-    echo "创建用户: $USER_NAME (UID: $USER_ID)"
-    useradd -u "$USER_ID" -g "$GROUP_ID" -m -d "/home/$USER_NAME" -s /bin/bash "$USER_NAME"
-else
-    echo "用户 $USER_NAME 已存在"
-    # 确保用户的 UID 和 GID 正确
-    usermod -u "$USER_ID" -g "$GROUP_ID" "$USER_NAME" 2>/dev/null || true
-fi
-
-# 确保家目录存在
-USER_HOME="/home/$USER_NAME"
-if [ ! -d "$USER_HOME" ]; then
-    echo "创建家目录: $USER_HOME"
-    mkdir -p "$USER_HOME"
-    chown "$USER_NAME":"$GROUP_NAME" "$USER_HOME"
-fi
-
-# 创建软连接
-echo "创建软连接..."
-
-# .cc-connect 软连接
-if [ -L "$USER_HOME/.cc-connect" ]; then
-    echo "  移除已存在的软连接: $USER_HOME/.cc-connect"
-    rm -f "$USER_HOME/.cc-connect"
-fi
-if [ ! -L "$USER_HOME/.cc-connect" ]; then
-    echo "  创建: $USER_HOME/.cc-connect -> /data/cc-connect/"
-    ln -sf /data/cc-connect/ "$USER_HOME/.cc-connect"
-    chown -h "$USER_NAME":"$GROUP_NAME" "$USER_HOME/.cc-connect"
-fi
-
-# .claude 软连接
-if [ -L "$USER_HOME/.claude" ]; then
-    echo "  移除已存在的软连接: $USER_HOME/.claude"
-    rm -f "$USER_HOME/.claude"
-fi
-if [ ! -L "$USER_HOME/.claude" ]; then
-    echo "  创建: $USER_HOME/.claude -> /data/claude"
-    ln -sf /data/claude "$USER_HOME/.claude"
-    chown -h "$USER_NAME":"$GROUP_NAME" "$USER_HOME/.claude"
-fi
-
-# 确保 /data 目录权限正确
-if [ -d "/data" ]; then
-    echo "设置 /data 目录权限..."
-    chown -R "$USER_NAME":"$GROUP_NAME" /data 2>/dev/null || true
-fi
-
-# 确保用户有 sudo 权限（如果需要）
-echo "$USER_NAME ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/"$USER_NAME"
-chmod 440 /etc/sudoers.d/"$USER_NAME"
-
-echo "配置完成！"
-
-# 切换到目标用户并运行 cc-connect
-echo "切换到用户 $USER_NAME 并启动 cc-connect..."
-exec su - "$USER_NAME" -c "cc-connect"
